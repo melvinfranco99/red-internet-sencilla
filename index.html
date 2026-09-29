@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Red por Internet</title>
+<meta name="description" content="Dos LANs privadas conectadas a través de Internet con ip netns: IPs públicas, rutas por defecto, SNAT y DNAT explicados paso a paso.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f7f7f4; --surface:#ffffff; --surface-2:#f0efea; --text:#1d1d1b; --muted:#62615c; --line:#dcdad2;
+  --a:#2f6fdf; --a-soft:#e5eefc;      /* casa A */
+  --net:#c77700; --net-soft:#fdf1dc;  /* internet */
+  --b:#1f9361; --b-soft:#e1f4ea;      /* casa B */
+  --bad:#c93a3a; --code-bg:#1f2126; --code-text:#e8e6df; --pkt:#d4318a;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#131416; --surface:#1b1d20; --surface-2:#23262a; --text:#ecebe6; --muted:#a3a19a; --line:#34373c;
+    --a:#6aa0ff; --a-soft:#1a2a45; --net:#f0a53a; --net-soft:#3a2a10; --b:#4cc98f; --b-soft:#143325;
+    --bad:#ff6b6b; --code-bg:#0d0e10; --code-text:#e8e6df; --pkt:#ff6fb8;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#131416; --surface:#1b1d20; --surface-2:#23262a; --text:#ecebe6; --muted:#a3a19a; --line:#34373c;
+  --a:#6aa0ff; --a-soft:#1a2a45; --net:#f0a53a; --net-soft:#3a2a10; --b:#4cc98f; --b-soft:#143325;
+  --bad:#ff6b6b; --code-bg:#0d0e10; --code-text:#e8e6df; --pkt:#ff6fb8;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 Inter,system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:40px 16px 80px}
+h1{font-size:clamp(28px,5vw,44px);line-height:1.15;margin:0 0 12px;letter-spacing:-.02em}
+h2{font-size:26px;margin:64px 0 12px;letter-spacing:-.01em}
+h3{font-size:18px;margin:28px 0 8px}
+p{margin:0 0 14px}
+.lead{font-size:19px;color:var(--muted);max-width:720px}
+.kicker{font:600 13px/1 JetBrains Mono,monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--net);margin-bottom:14px}
+code,.mono{font-family:JetBrains Mono,monospace;font-size:.9em}
+p code,li code,td code{background:var(--surface-2);padding:1px 6px;border-radius:5px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.tag{display:inline-block;font:600 12px/1 JetBrains Mono,monospace;padding:5px 8px;border-radius:6px}
+.tA{background:var(--a-soft);color:var(--a)} .tN{background:var(--net-soft);color:var(--net)} .tB{background:var(--b-soft);color:var(--b)}
+.diagram{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px}
+.diagram svg{display:block;width:100%;min-width:760px;height:auto}
+svg text{font-family:Inter,sans-serif;fill:var(--text)}
+svg .ip{font-family:JetBrains Mono,monospace;font-size:11px;fill:var(--muted)}
+svg .name{font-weight:700;font-size:14px}
+svg .zone{font:600 12px JetBrains Mono,monospace;letter-spacing:.06em}
+pre{background:var(--code-bg);color:var(--code-text);border-radius:12px;padding:16px;overflow-x:auto;font:13.5px/1.55 JetBrains Mono,monospace;margin:0 0 16px;position:relative}
+pre .c{color:#8b9a7a}
+.copy{position:absolute;top:8px;right:8px;background:#2e3138;color:#cfcdc6;border:0;border-radius:6px;padding:4px 9px;font:12px Inter,sans-serif;cursor:pointer}
+.copy:hover{background:#3b3f47}
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:13px}
+.tablewrap{overflow-x:auto}
+.callout{border-left:4px solid var(--net);background:var(--net-soft);padding:14px 16px;border-radius:0 10px 10px 0;margin:16px 0}
+.callout.bad{border-color:var(--bad);background:color-mix(in srgb,var(--bad) 10%,transparent)}
+ol.steps{padding-left:22px} ol.steps li{margin-bottom:6px}
+/* stepper */
+.stepper{margin-top:16px}
+.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0}
+.btn{background:var(--text);color:var(--bg);border:0;border-radius:9px;padding:9px 16px;font:600 14px Inter,sans-serif;cursor:pointer}
+.btn.sec{background:var(--surface-2);color:var(--text);border:1px solid var(--line)}
+.btn:disabled{opacity:.35;cursor:default}
+.count{font:13px JetBrains Mono,monospace;color:var(--muted)}
+.pkt{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.field{background:var(--surface-2);border-radius:10px;padding:10px 12px;transition:background .3s}
+.field small{display:block;color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.field b{font:600 16px JetBrains Mono,monospace;word-break:break-all}
+.field.changed{background:color-mix(in srgb,var(--pkt) 18%,transparent);outline:2px solid var(--pkt)}
+#stepText h3{margin-top:0}
+.node{transition:opacity .3s}
+.node.dim{opacity:.35}
+#packet{transition:transform .6s cubic-bezier(.5,0,.3,1)}
+footer{margin-top:80px;color:var(--muted);font-size:14px;border-top:1px solid var(--line);padding-top:20px}
+a{color:var(--a)}
+.theme{position:fixed;top:12px;right:12px;background:var(--surface);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:6px 10px;cursor:pointer;font:13px Inter,sans-serif}
+@media (max-width:600px){ .pkt{grid-template-columns:1fr} h2{margin-top:48px} }
+</style>
+</head>
+<body>
+<button class="theme" id="themeBtn" aria-label="Cambiar tema">◐ Tema</button>
+<main>
+
+<div class="kicker">Laboratorio ip netns · parte 2</div>
+<h1>Dos casas conectadas a través de Internet</h1>
+<p class="lead">En la parte 1, cada router sabía exactamente cómo llegar a cada red. En la vida real no es así: tu router de casa no tiene ni idea de dónde está la red de tu amigo. Solo sabe una cosa: <em>"lo que no conozca, a Internet"</em>. Aquí montamos eso mismo con Linux, y vemos por qué hace falta <strong>NAT</strong>.</p>
+
+<!-- ================= MAPA ================= -->
+<h2>El mapa de la red</h2>
+<p>Tres zonas: la casa A (red privada), Internet (solo IPs públicas) y la casa B (red privada). Los routers de casa <code>r1</code> y <code>r4</code> son la frontera: tienen un pie en cada mundo.</p>
+
+<div class="diagram">
+<svg id="map" viewBox="0 0 1000 300" role="img" aria-label="Topología: pc1, sw1, r1, isp1, isp2, r4, sw4, pc4">
+  <!-- zonas -->
+  <rect x="12" y="40" width="336" height="220" rx="16" fill="var(--a-soft)" stroke="var(--a)" stroke-opacity=".4"/>
+  <rect x="360" y="40" width="280" height="220" rx="16" fill="var(--net-soft)" stroke="var(--net)" stroke-opacity=".4"/>
+  <rect x="652" y="40" width="336" height="220" rx="16" fill="var(--b-soft)" stroke="var(--b)" stroke-opacity=".4"/>
+  <text class="zone" x="28" y="64" style="fill:var(--a)">CASA A · 10.10.10.0/24 · PRIVADA</text>
+  <text class="zone" x="376" y="64" style="fill:var(--net)">INTERNET · IPs PÚBLICAS</text>
+  <text class="zone" x="668" y="64" style="fill:var(--b)">CASA B · 10.10.40.0/24 · PRIVADA</text>
+
+  <!-- cables -->
+  <g stroke="var(--muted)" stroke-width="2.5" fill="none">
+    <line id="L-pc1-r1" x1="60" y1="150" x2="290" y2="150"/>
+    <line id="L-r1-isp1" x1="290" y1="150" x2="420" y2="150"/>
+    <line id="L-isp1-isp2" x1="420" y1="150" x2="580" y2="150" stroke-width="5" stroke="var(--net)"/>
+    <line id="L-isp2-r4" x1="580" y1="150" x2="710" y2="150"/>
+    <line id="L-r4-pc4" x1="710" y1="150" x2="940" y2="150"/>
+  </g>
+  <text class="ip" x="355" y="108" text-anchor="middle">203.0.113.0/24</text>
+  <text class="ip" x="500" y="108" text-anchor="middle">192.0.2.0/24</text>
+  <text class="ip" x="645" y="108" text-anchor="middle">198.51.100.0/24</text>
+
+  <!-- nodos -->
+  <g class="node" data-n="pc1"><rect x="30" y="126" width="60" height="48" rx="8" fill="var(--surface)" stroke="var(--a)" stroke-width="2"/><text class="name" x="60" y="155" text-anchor="middle">pc1</text><text class="ip" x="60" y="196" text-anchor="middle">10.10.10.10</text></g>
+  <g class="node" data-n="sw1"><rect x="150" y="136" width="50" height="28" rx="6" fill="var(--surface-2)" stroke="var(--muted)"/><text x="175" y="155" text-anchor="middle" font-size="12">sw1</text></g>
+  <g class="node" data-n="r1"><circle cx="290" cy="150" r="27" fill="var(--surface)" stroke="var(--a)" stroke-width="2.5"/><text class="name" x="290" y="155" text-anchor="middle">r1</text><text class="ip" x="290" y="196" text-anchor="middle">10.10.10.1</text><text class="ip" x="290" y="211" text-anchor="middle" style="fill:var(--net);font-weight:600">203.0.113.10</text><text class="ip" x="290" y="236" text-anchor="middle">NAT de salida</text></g>
+  <g class="node" data-n="isp1"><circle cx="420" cy="150" r="27" fill="var(--surface)" stroke="var(--net)" stroke-width="2.5"/><text class="name" x="420" y="155" text-anchor="middle">isp1</text><text class="ip" x="420" y="196" text-anchor="middle">203.0.113.1</text><text class="ip" x="420" y="211" text-anchor="middle">192.0.2.1</text></g>
+  <g class="node" data-n="isp2"><circle cx="580" cy="150" r="27" fill="var(--surface)" stroke="var(--net)" stroke-width="2.5"/><text class="name" x="580" y="155" text-anchor="middle">isp2</text><text class="ip" x="580" y="196" text-anchor="middle">192.0.2.2</text><text class="ip" x="580" y="211" text-anchor="middle">198.51.100.1</text></g>
+  <g class="node" data-n="r4"><circle cx="710" cy="150" r="27" fill="var(--surface)" stroke="var(--b)" stroke-width="2.5"/><text class="name" x="710" y="155" text-anchor="middle">r4</text><text class="ip" x="710" y="196" text-anchor="middle" style="fill:var(--net);font-weight:600">198.51.100.10</text><text class="ip" x="710" y="211" text-anchor="middle">10.10.40.1</text><text class="ip" x="710" y="236" text-anchor="middle">:8080 → pc4:80</text></g>
+  <g class="node" data-n="sw4"><rect x="800" y="136" width="50" height="28" rx="6" fill="var(--surface-2)" stroke="var(--muted)"/><text x="825" y="155" text-anchor="middle" font-size="12">sw4</text></g>
+  <g class="node" data-n="pc4"><rect x="910" y="126" width="60" height="48" rx="8" fill="var(--surface)" stroke="var(--b)" stroke-width="2"/><text class="name" x="940" y="155" text-anchor="middle">pc4</text><text class="ip" x="940" y="196" text-anchor="middle">10.10.40.10</text><text class="ip" x="940" y="211" text-anchor="middle">web :80</text></g>
+
+  <!-- paquete -->
+  <g id="packet" style="transform:translate(60px,150px)" opacity="0">
+    <circle r="11" fill="var(--pkt)"/><circle r="11" fill="none" stroke="var(--pkt)" stroke-opacity=".35" stroke-width="8"/>
+  </g>
+</svg>
+</div>
+
+<!-- ================= QUE CAMBIA ================= -->
+<h2>¿Qué cambia respecto a la parte 1?</h2>
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0">Parte 1 · red en anillo</h3>
+    <ul>
+      <li>4 routers conectados entre sí (r1, r2, r3, r4).</li>
+      <li>Todo son IPs privadas.</li>
+      <li>r1 tiene una ruta <em>exacta</em>: <code>10.10.40.0/24 via r2</code>.</li>
+      <li>pc1 hace ping directamente a <code>10.10.40.10</code>.</li>
+      <li>No hace falta NAT.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Parte 2 · por Internet</h3>
+    <ul>
+      <li>Fuera r2 y r3. En medio: dos routers de Internet (<code>isp1</code>, <code>isp2</code>).</li>
+      <li>r1 y r4 tienen una IP <strong>pública</strong> en su lado de Internet.</li>
+      <li>r1 solo sabe <code>default via isp1</code>: "todo a Internet".</li>
+      <li>pc1 <strong>no</strong> puede llegar a <code>10.10.40.10</code>: habla con <code>198.51.100.10:8080</code>.</li>
+      <li>Hace falta NAT en los dos routers de casa.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ================= IPS ================= -->
+<h2>IPs privadas e IPs públicas</h2>
+<p>Las <strong>IPs privadas</strong> (<code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code>) se pueden repetir en millones de casas a la vez. Por eso Internet <em>no puede</em> saber a cuál de todas las <code>10.10.40.10</code> del mundo te refieres, y los routers de Internet las descartan.</p>
+<p>Las <strong>IPs públicas</strong> son únicas en todo el mundo: tu proveedor te asigna una a tu router. Es la única dirección de tu casa que el resto de Internet ve.</p>
+
+<div class="tablewrap card" style="padding:6px 10px">
+<table>
+<tr><th>Rango</th><th>Uso en el laboratorio</th><th>Tipo</th></tr>
+<tr><td><code>10.10.10.0/24</code></td><td>LAN de la casa A (pc1, r1)</td><td><span class="tag tA">privada</span></td></tr>
+<tr><td><code>203.0.113.0/24</code></td><td>Enlace r1 ↔ isp1. r1 = <code>203.0.113.10</code></td><td><span class="tag tN">pública</span></td></tr>
+<tr><td><code>192.0.2.0/24</code></td><td>Troncal isp1 ↔ isp2</td><td><span class="tag tN">pública</span></td></tr>
+<tr><td><code>198.51.100.0/24</code></td><td>Enlace isp2 ↔ r4. r4 = <code>198.51.100.10</code></td><td><span class="tag tN">pública</span></td></tr>
+<tr><td><code>10.10.40.0/24</code></td><td>LAN de la casa B (r4, pc4)</td><td><span class="tag tB">privada</span></td></tr>
+</table>
+</div>
+<div class="callout">¿Por qué esos rangos "raros"? <code>192.0.2.0/24</code>, <code>198.51.100.0/24</code> y <code>203.0.113.0/24</code> están reservados para documentación y ejemplos (RFC 5737). Se comportan como IPs públicas pero no son de nadie, así que no chocan con ninguna web real.</div>
+
+<!-- ================= RUTAS ================= -->
+<h2>Quién sabe llegar a dónde</h2>
+<p>Cada router solo necesita saber dos cosas: las redes que tiene enchufadas (se aprenden solas al poner la IP) y a quién pasarle el resto.</p>
+<div class="tablewrap card" style="padding:6px 10px">
+<table>
+<tr><th>Nodo</th><th>Rutas que añadimos a mano</th><th>En palabras</th></tr>
+<tr><td><b>pc1</b></td><td><code>default via 10.10.10.1</code></td><td>Lo que no sea mi LAN, a mi router.</td></tr>
+<tr><td><b>r1</b></td><td><code>default via 203.0.113.1</code></td><td>Lo que no conozca, a mi proveedor.</td></tr>
+<tr><td><b>isp1</b></td><td><code>198.51.100.0/24 via 192.0.2.2</code></td><td>La red pública de la casa B está detrás de isp2.</td></tr>
+<tr><td><b>isp2</b></td><td><code>203.0.113.0/24 via 192.0.2.1</code></td><td>La red pública de la casa A está detrás de isp1.</td></tr>
+<tr><td><b>r4</b></td><td><code>default via 198.51.100.1</code></td><td>Lo que no conozca, a mi proveedor.</td></tr>
+<tr><td><b>pc4</b></td><td><code>default via 10.10.40.1</code></td><td>Lo que no sea mi LAN, a mi router.</td></tr>
+</table>
+</div>
+<p style="margin-top:14px">Fíjate: <strong>nadie</strong> tiene una ruta hacia <code>10.10.40.0/24</code> ni hacia <code>10.10.10.0/24</code> salvo el router de esa casa. En el Internet real, las rutas entre proveedores las reparte automáticamente un protocolo llamado <strong>BGP</strong>; aquí las ponemos a mano.</p>
+
+<!-- ================= NAT ================= -->
+<h2>NAT: el truco que lo hace posible</h2>
+<div class="grid2">
+  <div class="card">
+    <span class="tag tA">r1 · salida</span>
+    <h3>SNAT / MASQUERADE</h3>
+    <p>Cuando un paquete de pc1 sale hacia Internet, r1 <strong>cambia la IP de origen</strong> <code>10.10.10.10</code> por la suya pública <code>203.0.113.10</code>, y lo apunta en una libreta (la tabla <em>conntrack</em>). Cuando llega la respuesta, mira la libreta y se la devuelve a pc1.</p>
+<pre>iptables -t nat -A POSTROUTING \
+  -s 10.10.10.0/24 -o veth_r1_isp1 \
+  -j MASQUERADE</pre>
+  </div>
+  <div class="card">
+    <span class="tag tB">r4 · entrada</span>
+    <h3>DNAT / "abrir un puerto"</h3>
+    <p>Desde fuera solo se ve a r4. Así que le decimos: <em>"lo que te llegue al puerto 8080, pásaselo a pc4 al puerto 80"</em>. r4 <strong>cambia la IP y el puerto de destino</strong>. Es lo que haces al "abrir puertos" en el router de tu casa.</p>
+<pre>iptables -t nat -A PREROUTING \
+  -i veth_r4_isp2 -p tcp --dport 8080 \
+  -j DNAT --to-destination 10.10.40.10:80</pre>
+  </div>
+</div>
+
+<!-- ================= VIAJE DEL PAQUETE ================= -->
+<h2>El viaje de un <code>curl</code>, paso a paso</h2>
+<p>Pulsa <b>Siguiente</b> y mira cómo se mueve el paquete por el mapa de arriba y qué campos cambian (en rosa).</p>
+<div class="card stepper">
+  <div class="diagram" style="border:0;padding:0;margin-bottom:6px" id="mapSlot"></div>
+  <div class="controls">
+    <button class="btn sec" id="prev">← Anterior</button>
+    <button class="btn" id="next">Siguiente →</button>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="pkt">
+    <div class="field" id="fSrc"><small>Origen</small><b></b></div>
+    <div class="field" id="fDst"><small>Destino</small><b></b></div>
+  </div>
+  <div id="stepText"></div>
+</div>
+
+<!-- ================= SCRIPT ================= -->
+<h2>El script, bloque a bloque</h2>
+<p>Todo está en un único fichero, <a href="2_red_por_internet.sh"><code>2_red_por_internet.sh</code></a>, comentado. Se ejecuta con <code>sudo bash 2_red_por_internet.sh</code>. Estos son sus bloques:</p>
+<ol class="steps">
+  <li><b>Limpiar</b> solo los namespaces y bridges del laboratorio (no toca <code>docker0</code> ni otros bridges tuyos).</li>
+  <li><b>Crear dispositivos</b>: namespaces <code>pc1 r1 isp1 isp2 r4 pc4</code> y bridges <code>sw1 sw4</code>.</li>
+  <li><b>Crear cables</b> <code>veth</code>: pc1–sw1, sw1–r1, r1–isp1, isp1–isp2, isp2–r4, r4–sw4, sw4–pc4.</li>
+  <li><b>Conectar</b> cada extremo a su namespace o a su switch.</li>
+  <li><b>Encender</b> las interfaces (<code>ip link set up</code>), incluida <code>lo</code>.</li>
+  <li><b>IPs</b>: privadas en las casas, públicas en todo lo que toca Internet.</li>
+  <li><b>Rutas</b>: las de la tabla de arriba.</li>
+  <li><b>Activar el reenvío</b> (<code>ip_forward=1</code>) en r1, isp1, isp2 y r4.</li>
+  <li><b>Los ISPs tiran IPs privadas</b>: <code>iptables -A FORWARD -s 10.0.0.0/8 -j DROP</code>, como el Internet real.</li>
+  <li><b>NAT</b>: MASQUERADE en r1 y r4; DNAT 8080 → pc4:80 en r4.</li>
+  <li><b>Servidor web</b> en pc4 con <code>python3 -m http.server 80</code>.</li>
+</ol>
+<pre><span class="c"># Lo esencial, en 6 líneas:</span>
+ip netns exec r1   ip route add default via 203.0.113.1
+ip netns exec r4   ip route add default via 198.51.100.1
+ip netns exec isp1 ip route add 198.51.100.0/24 via 192.0.2.2
+ip netns exec isp2 ip route add 203.0.113.0/24  via 192.0.2.1
+ip netns exec r1   iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o veth_r1_isp1 -j MASQUERADE
+ip netns exec r4   iptables -t nat -A PREROUTING -i veth_r4_isp2 -p tcp --dport 8080 -j DNAT --to-destination 10.10.40.10:80</pre>
+
+<!-- ================= PRUEBAS ================= -->
+<h2>Cómo comprobar que funciona</h2>
+<h3>1 · Montar la red</h3>
+<pre>sudo bash 2_red_por_internet.sh</pre>
+
+<h3>2 · Ping a la IP pública del router de pc4 <span class="tag tB">funciona</span></h3>
+<pre>sudo ip netns exec pc1 ping -c 3 198.51.100.10</pre>
+
+<h3>3 · curl a pc4 por IP pública y puerto <span class="tag tB">funciona</span></h3>
+<pre>sudo ip netns exec pc1 curl http://198.51.100.10:8080
+<span class="c"># Hola, soy pc4 (10.10.40.10). Si lees esto, has cruzado Internet :)</span></pre>
+
+<h3>4 · Ping a la IP privada de pc4 <span class="tag" style="background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)">falla, y es lo correcto</span></h3>
+<pre>sudo ip netns exec pc1 ping -c 3 -W 1 10.10.40.10</pre>
+<p>Internet no sabe llegar a una <code>10.x.x.x</code>. Esa es justo la lección.</p>
+
+<h3>5 · Ver los saltos por Internet</h3>
+<pre>sudo ip netns exec pc1 tracepath -n 198.51.100.10
+<span class="c">#  1: 10.10.10.1      (r1)
+#  2: 203.0.113.1     (isp1)
+#  3: 192.0.2.2       (isp2)
+#  4: 198.51.100.10   (r4) alcanzado</span></pre>
+
+<h3>6 · Ver el NAT con tus propios ojos</h3>
+<p>En una terminal, escucha en pc4:</p>
+<pre>sudo ip netns exec pc4 tcpdump -ni veth_pc4_sw4 tcp port 80</pre>
+<p>En otra, lanza el curl del paso 3. Verás <code>203.0.113.10.xxxxx &gt; 10.10.40.10.80</code>: pc4 no ve a <code>10.10.10.10</code>, ve la IP pública de la casa A.</p>
+<p>La "libreta" de r1 y los contadores de las reglas:</p>
+<pre>sudo ip netns exec r1 cat /proc/net/nf_conntrack
+sudo ip netns exec r4 iptables -t nat -L -n -v</pre>
+
+<h3>7 · Experimento: quita el NAT y rómpelo</h3>
+<pre><span class="c"># quitar el NAT de salida</span>
+sudo ip netns exec r1 iptables -t nat -D POSTROUTING -s 10.10.10.0/24 -o veth_r1_isp1 -j MASQUERADE
+sudo ip netns exec pc1 ping -c 2 -W 1 198.51.100.10   <span class="c"># ahora falla</span>
+<span class="c"># volver a ponerlo</span>
+sudo ip netns exec r1 iptables -t nat -A POSTROUTING -s 10.10.10.0/24 -o veth_r1_isp1 -j MASQUERADE</pre>
+<div class="callout bad">Sin NAT, el paquete sale de r1 con origen <code>10.10.10.10</code>. isp1 lo tira (regla <code>-s 10.0.0.0/8 -j DROP</code>) y, aunque no lo tirara, r4 nunca sabría a quién responder.</div>
+
+<h3>Limpiar</h3>
+<pre>for ns in pc1 pc4 r1 r4 isp1 isp2; do
+  sudo ip netns pids $ns | xargs -r sudo kill -9
+  sudo ip netns del $ns
+done
+sudo ip link del sw1; sudo ip link del sw4</pre>
+
+<footer>Laboratorio de redes con <code>ip netns</code> · parte 2 · <a href="2_red_por_internet.sh">descargar el script</a> · <a href="PRUEBAS.md">guía de pruebas</a></footer>
+</main>
+
+<script>
+// ---- tema ----
+(function(){
+  const root=document.documentElement, btn=document.getElementById('themeBtn');
+  try{ const t=localStorage.getItem('theme'); if(t) root.dataset.theme=t; }catch(e){}
+  btn.onclick=()=>{
+    const dark = root.dataset.theme ? root.dataset.theme==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark?'light':'dark';
+    try{ localStorage.setItem('theme',root.dataset.theme); }catch(e){}
+  };
+})();
+
+// ---- botones copiar ----
+document.querySelectorAll('pre').forEach(pre=>{
+  const b=document.createElement('button'); b.className='copy'; b.textContent='Copiar';
+  b.onclick=()=>{
+    const txt=[...pre.childNodes].filter(n=>n!==b).map(n=>n.textContent).join('');
+    navigator.clipboard.writeText(txt.trim()).then(()=>{b.textContent='¡Copiado!';setTimeout(()=>b.textContent='Copiar',1200)});
+  };
+  pre.appendChild(b);
+});
+
+// ---- viaje del paquete ----
+const X={pc1:60,sw1:175,r1:290,isp1:420,isp2:580,r4:710,sw4:825,pc4:940};
+const S=[
+ {at:'pc1', active:['pc1'], src:'10.10.10.10:40286', dst:'198.51.100.10:8080', ch:[],
+  t:'1 · pc1 crea la petición', d:'pc1 quiere la web de pc4. Solo conoce su IP pública y el puerto abierto: <code>198.51.100.10:8080</code>. Esa IP no es de su LAN, así que se la manda a su gateway <code>10.10.10.1</code> (r1) a través de sw1.'},
+ {at:'r1', active:['pc1','r1'], src:'10.10.10.10:40286', dst:'198.51.100.10:8080', ch:[],
+  t:'2 · Llega a r1', d:'r1 mira su tabla de rutas: no conoce <code>198.51.100.10</code>, así que usa la ruta por defecto → <code>isp1</code> por la interfaz de Internet.'},
+ {at:'isp1', active:['r1','isp1'], src:'203.0.113.10:40286', dst:'198.51.100.10:8080', ch:['src'],
+  t:'3 · r1 hace MASQUERADE y sale a Internet', d:'Justo antes de salir, r1 cambia el origen <code>10.10.10.10</code> por su IP pública <code>203.0.113.10</code>, y lo apunta en conntrack: <em>"el puerto 40286 es de pc1"</em>. Desde aquí, nadie en Internet sabrá que existe pc1.'},
+ {at:'isp2', active:['isp1','isp2'], src:'203.0.113.10:40286', dst:'198.51.100.10:8080', ch:[],
+  t:'4 · isp1 lo pasa a isp2', d:'isp1 tiene la ruta <code>198.51.100.0/24 via 192.0.2.2</code>. Lo manda por la troncal. Los routers de Internet no cambian nada del paquete: solo lo reenvían.'},
+ {at:'r4', active:['isp2','r4'], src:'203.0.113.10:40286', dst:'198.51.100.10:8080', ch:[],
+  t:'5 · isp2 lo entrega a r4', d:'<code>198.51.100.0/24</code> está conectada directamente a isp2, así que se lo da a r4.'},
+ {at:'pc4', active:['r4','pc4'], src:'203.0.113.10:40286', dst:'10.10.40.10:80', ch:['dst'],
+  t:'6 · r4 hace DNAT (puerto abierto)', d:'Regla de r4: lo que llegue al puerto 8080 va a <code>10.10.40.10:80</code>. Cambia el destino, lo apunta en su conntrack y lo manda a pc4 por sw4.'},
+ {at:'pc4', active:['pc4'], src:'10.10.40.10:80', dst:'203.0.113.10:40286', ch:['src','dst'],
+  t:'7 · pc4 responde', d:'pc4 cree que le ha escrito <code>203.0.113.10</code> (no sabe nada de pc1). Responde con la web a esa IP, que no es de su LAN → a su gateway r4.'},
+ {at:'isp2', active:['pc4','r4','isp2'], src:'198.51.100.10:8080', dst:'203.0.113.10:40286', ch:['src'],
+  t:'8 · r4 deshace el DNAT', d:'r4 reconoce la conexión en su conntrack y pone el origen como si hubiera respondido él: <code>198.51.100.10:8080</code>. Ruta por defecto → isp2.'},
+ {at:'r1', active:['isp2','isp1','r1'], src:'198.51.100.10:8080', dst:'203.0.113.10:40286', ch:[],
+  t:'9 · Vuelta por Internet', d:'isp2 tiene la ruta <code>203.0.113.0/24 via 192.0.2.1</code> → isp1, que tiene esa red conectada → r1.'},
+ {at:'pc1', active:['r1','pc1'], src:'198.51.100.10:8080', dst:'10.10.10.10:40286', ch:['dst'],
+  t:'10 · r1 deshace el MASQUERADE', d:'r1 mira su libreta: <em>"el 40286 era de pc1"</em>. Cambia el destino a <code>10.10.10.10</code> y se lo entrega. pc1 imprime: <code>Hola, soy pc4…</code> 🎉'}
+];
+// mover el mapa dentro del stepper para verlo junto al texto
+const mapDiv=document.getElementById('map').parentElement, slot=document.getElementById('mapSlot');
+const clone=mapDiv.cloneNode(true); clone.querySelector('svg').id='map2';
+slot.appendChild(clone.querySelector('svg'));
+const svg=document.getElementById('map2');
+svg.querySelectorAll('[id]').forEach(e=>{ if(e.id!=='map2') e.id=e.id+'2'; });
+const pkt=document.getElementById('packet2');
+let i=0;
+function render(){
+  const s=S[i];
+  pkt.setAttribute('opacity','1');
+  pkt.style.transform=`translate(${X[s.at]}px,${s.at.startsWith('pc')?118:150}px)`;
+  svg.querySelectorAll('.node').forEach(n=>n.classList.toggle('dim', !s.active.includes(n.dataset.n) && !['sw1','sw4'].includes(n.dataset.n)));
+  const fs=document.getElementById('fSrc'), fd=document.getElementById('fDst');
+  fs.querySelector('b').textContent=s.src; fd.querySelector('b').textContent=s.dst;
+  fs.classList.toggle('changed', s.ch.includes('src')); fd.classList.toggle('changed', s.ch.includes('dst'));
+  document.getElementById('stepText').innerHTML=`<h3>${s.t}</h3><p>${s.d}</p>`;
+  document.getElementById('count').textContent=`paso ${i+1} / ${S.length}`;
+  document.getElementById('prev').disabled=i===0;
+  document.getElementById('next').disabled=i===S.length-1;
+}
+document.getElementById('next').onclick=()=>{ if(i<S.length-1){i++;render();} };
+document.getElementById('prev').onclick=()=>{ if(i>0){i--;render();} };
+render();
+</script>
+</body>
+</html>
